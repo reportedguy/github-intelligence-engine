@@ -19,6 +19,7 @@ import { FilterBar } from '@/components/FilterBar';
 import { RepoCard } from '@/components/RepoCard';
 import { Repository, SearchMode, SearchResponse } from '@/types/repo';
 import { MOCK_REPOSITORIES } from '@/lib/mockData';
+import { executeSearch } from '@/lib/db';
 
 export default function DashboardPage() {
   const [query, setQuery] = useState('');
@@ -48,21 +49,15 @@ export default function DashboardPage() {
   const performSearch = useCallback(async () => {
     setIsLoading(true);
     try {
-      const params = new URLSearchParams({
-        q: debouncedQuery,
+      const data: SearchResponse = await executeSearch({
+        query: debouncedQuery,
         domain: selectedDomain,
         archetype: selectedArchetype,
         language: selectedLanguage,
-        min_stars: String(minStars),
+        min_stars: minStars,
         mode,
       });
 
-      const res = await fetch(`/api/search?${params.toString()}`);
-      if (!res.ok) {
-        throw new Error(`HTTP error ${res.status}`);
-      }
-
-      const data: SearchResponse = await res.json();
       startTransition(() => {
         setResults(data.results || []);
         setTotalCount(data.total || 0);
@@ -70,8 +65,7 @@ export default function DashboardPage() {
         setDbProvider(data.provider || 'local-edge');
       });
     } catch (err) {
-      console.warn('Live search API request failed, applying client filter:', err);
-      // Client-side fallback filter
+      console.warn('Live search execution failed, applying fallback:', err);
       const filtered = MOCK_REPOSITORIES.filter((r) => {
         if (r.stars_count < minStars) return false;
         if (selectedDomain !== 'All' && r.macro_domain !== selectedDomain) return false;
