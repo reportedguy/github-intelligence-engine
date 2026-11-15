@@ -20,6 +20,12 @@ import argparse
 from typing import List, Dict, Any, Optional, Tuple
 import requests
 
+from dotenv import load_dotenv
+load_dotenv()
+
+# Ensure parent directory is on sys.path for direct script execution
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
 from scripts.schema import (
     RepositoryTaxonomySchema,
     validate_taxonomy,
@@ -397,6 +403,105 @@ class PostgresDatabaseAdapter(BaseDatabaseAdapter):
             self.conn.close()
 
 
+class TursoDatabaseAdapter(BaseDatabaseAdapter):
+    """Turso LibSQL native HTTP REST Pipeline adapter."""
+    def __init__(self, db_url: str, auth_token: Optional[str] = None):
+        base_url = db_url
+        if base_url.startswith("libsql://"):
+            base_url = base_url.replace("libsql://", "https://")
+        if not base_url.startswith("http"):
+            base_url = f"https://{base_url}"
+        self.pipeline_url = f"{base_url.rstrip('/')}/v2/pipeline"
+        self.auth_token = auth_token or os.getenv("TURSO_AUTH_TOKEN", "")
+        self.headers = {
+            "Authorization": f"Bearer {self.auth_token}",
+            "Content-Type": "application/json",
+        }
+
+    def get_unenriched_repositories(self, limit: int = 1000) -> List[Dict[str, Any]]:
+        sql = "SELECT id, full_name, name, owner, description, primary_language FROM repositories WHERE is_enriched = 0 ORDER BY stars_count DESC LIMIT ?"
+        payload = {
+            "requests": [
+                {
+                    "type": "execute",
+                    "stmt": {
+                        "sql": sql,
+                        "args": [{"type": "integer", "value": str(limit)}],
+                    }
+                }
+            ]
+        }
+        resp = requests.post(self.pipeline_url, headers=self.headers, json=payload, timeout=20)
+        if resp.status_code != 200:
+            logger.error("Failed to query unenriched repos from Turso: %s", resp.text)
+            return []
+        data = resp.json()
+        results = data.get("results", [])
+        if not results or results[0].get("type") != "ok":
+            return []
+        
+        result_set = results[0]["response"]["result"]
+        cols = [c["name"] for c in result_set["cols"]]
+        rows = []
+        for r in result_set["rows"]:
+            row_dict = {}
+            for i, col in enumerate(cols):
+                val = r[i].get("value")
+                row_dict[col] = val
+            rows.append(row_dict)
+        return rows
+
+    def update_repository_taxonomy(
+        self,
+        repo_id: int,
+        taxonomy: RepositoryTaxonomySchema,
+        embedding: List[float],
+    ) -> bool:
+        sql = """
+            UPDATE repositories
+            SET macro_domain = ?,
+                sub_domain = ?,
+                archetype = ?,
+                problem_solved = ?,
+                use_cases = ?,
+                primary_ecosystem = ?,
+                target_audience = ?,
+                confidence_score = ?,
+                is_enriched = 1,
+                embedding = vector(?),
+                last_synced_at = datetime('now')
+            WHERE id = ?
+        """
+        args = [
+            {"type": "text", "value": taxonomy.macro_domain},
+            {"type": "text", "value": taxonomy.sub_domain},
+            {"type": "text", "value": taxonomy.archetype},
+            {"type": "text", "value": taxonomy.problem_solved},
+            {"type": "text", "value": json.dumps(taxonomy.use_cases)},
+            {"type": "text", "value": taxonomy.primary_ecosystem},
+            {"type": "text", "value": json.dumps(taxonomy.target_audience)},
+            {"type": "integer", "value": str(taxonomy.confidence_score)},
+            {"type": "text", "value": json.dumps(embedding)},
+            {"type": "integer", "value": str(repo_id)},
+        ]
+        payload = {
+            "requests": [
+                {
+                    "type": "execute",
+                    "stmt": {
+                        "sql": sql,
+                        "args": args,
+                    }
+                }
+            ]
+        }
+        resp = requests.post(self.pipeline_url, headers=self.headers, json=payload, timeout=20)
+        return resp.status_code == 200
+
+    def close(self):
+        pass
+
+
 def create_database_adapter(
     provider: Optional[str] = None,
     db_url: Optional[str] = None,
@@ -405,17 +510,12 @@ def create_database_adapter(
     prov = (provider or os.getenv("DB_PROVIDER", "sqlite")).lower()
     url = db_url or os.getenv("DATABASE_URL", "")
 
-    if prov == "supabase" or url.startswith("postgres://") or url.startswith("postgresql://"):
+    if prov == "turso" or "turso.io" in url or url.startswith("libsql://"):
+        logger.info("Initializing Turso LibSQL HTTP pipeline database adapter...")
+        return TursoDatabaseAdapter(url)
+    elif prov == "supabase" or url.startswith("postgres://") or url.startswith("postgresql://"):
         logger.info("Initializing Supabase/PostgreSQL database adapter...")
         return PostgresDatabaseAdapter(url)
-    elif prov == "turso" and url.startswith("libsql://"):
-        try:
-            import libsql_client
-            # If libsql_client is installed, can wrap; otherwise fall back to sqlite
-            logger.info("Initializing Turso LibSQL adapter via SQLite protocol...")
-        except ImportError:
-            logger.warning("libsql_client not installed, falling back to local SQLite.")
-        return SqliteDatabaseAdapter(url.replace("libsql://", "").replace("sqlite:///", "") or "github_intelligence.db")
     else:
         db_path = url.replace("sqlite:///", "") if url.startswith("sqlite:///") else (url or "github_intelligence.db")
         logger.info(f"Initializing SQLite database adapter (path: {db_path})...")

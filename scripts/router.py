@@ -109,14 +109,14 @@ def get_default_provider_pool() -> List[ProviderConfig]:
         ProviderConfig(
             name="Groq Cloud",
             endpoint="https://api.groq.com/openai/v1/chat/completions",
-            model="llama-3.3-70b-versatile",
+            model=os.getenv("GROQ_MODEL", "openai/gpt-oss-120b"),
             api_key_envs=["GROQ_API_KEY"],
             timeout=30,
         ),
         ProviderConfig(
             name="Google AI Studio",
             endpoint="https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
-            model="gemini-2.0-flash",
+            model=os.getenv("GEMINI_MODEL", "gemini-3.8-flash"),
             api_key_envs=["GEMINI_API_KEY", "GOOGLE_API_KEY"],
             timeout=35,
         ),

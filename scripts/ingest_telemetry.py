@@ -22,6 +22,8 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 from urllib.parse import urlparse
 
 import requests
+from dotenv import load_dotenv
+load_dotenv()
 
 # Set up structured logging
 logging.basicConfig(
