@@ -354,14 +354,15 @@ class AdaptiveBisectionIngestor:
             max_stars,
         )
 
-        left_repos = self.search_range(min_stars, midpoint, limit=limit)
-        if limit is not None and len(left_repos) >= limit:
-            return left_repos[:limit]
+        # Explore higher star bracket first (right branch) so top repositories are ingested first
+        right_repos = self.search_range(midpoint + 1, max_stars, limit=limit)
+        if limit is not None and len(right_repos) >= limit:
+            return right_repos[:limit]
 
-        remaining_limit = (limit - len(left_repos)) if limit is not None else None
-        right_repos = self.search_range(midpoint + 1, max_stars, limit=remaining_limit)
+        remaining_limit = (limit - len(right_repos)) if limit is not None else None
+        left_repos = self.search_range(min_stars, midpoint, limit=remaining_limit)
 
-        return left_repos + right_repos
+        return right_repos + left_repos
 
     def _partition_by_creation_date(
         self,
@@ -525,8 +526,8 @@ class AdaptiveBisectionIngestor:
         if provider == "supabase" or (self.database_url and "postgres" in self.database_url):
             return self._upsert_postgresql(transformed)
 
-        # Turso / LibSQL Client Upsert
-        if provider == "turso" and HAS_LIBSQL and self.database_url and "libsql" in self.database_url:
+        # Turso / LibSQL Native HTTP Pipeline Upsert
+        if provider == "turso" or (self.database_url and "turso.io" in self.database_url):
             return self._upsert_turso(transformed)
 
         # SQLite / Local Fallback Upsert
@@ -642,8 +643,20 @@ class AdaptiveBisectionIngestor:
         return upserted
 
     def _upsert_turso(self, records: List[Dict[str, Any]]) -> int:
-        """Upsert using Turso libsql-client."""
-        client = libsql_client.create_client_sync(url=self.database_url, auth_token=self.turso_auth_token)
+        """Upsert using Turso native HTTP REST Pipeline API."""
+        base_url = self.database_url
+        if base_url.startswith("libsql://"):
+            base_url = base_url.replace("libsql://", "https://")
+        if not base_url.startswith("http"):
+            base_url = f"https://{base_url}"
+        
+        # Strip trailing slashes and ensure /v2/pipeline endpoint
+        pipeline_url = f"{base_url.rstrip('/')}/v2/pipeline"
+        headers = {
+            "Authorization": f"Bearer {self.turso_auth_token}",
+            "Content-Type": "application/json",
+        }
+
         sql = """
         INSERT INTO repositories (
             id, full_name, name, owner, url, homepage, description,
@@ -665,21 +678,66 @@ class AdaptiveBisectionIngestor:
             is_archived = excluded.is_archived,
             last_synced_at = datetime('now');
         """
+
+        def to_hrana_val(v):
+            if v is None:
+                return {"type": "null"}
+            elif isinstance(v, bool):
+                return {"type": "integer", "value": str(1 if v else 0)}
+            elif isinstance(v, int):
+                return {"type": "integer", "value": str(v)}
+            elif isinstance(v, float):
+                return {"type": "float", "value": v}
+            else:
+                return {"type": "text", "value": str(v)}
+
         upserted = 0
         for i in range(0, len(records), self.batch_size):
             batch = records[i : i + self.batch_size]
+            requests_payload = []
             for r in batch:
-                params = (
-                    r["id"], r["full_name"], r["name"], r["owner"], r["url"],
-                    r["homepage"], r["description"], r["stars_count"], r["forks_count"],
-                    r["open_issues_count"], r["primary_language"], r["license"],
-                    1 if r["is_archived"] else 0, r["created_at"], r["pushed_at"],
-                    r["macro_domain"], r["sub_domain"], r["archetype"], r["problem_solved"],
-                    r["use_cases"], r["primary_ecosystem"], r["target_audience"],
-                    r["confidence_score"], 1 if r["is_enriched"] else 0
-                )
-                client.execute(sql, params)
-                upserted += 1
+                params = [
+                    to_hrana_val(r["id"]),
+                    to_hrana_val(r["full_name"]),
+                    to_hrana_val(r["name"]),
+                    to_hrana_val(r["owner"]),
+                    to_hrana_val(r["url"]),
+                    to_hrana_val(r["homepage"]),
+                    to_hrana_val(r["description"]),
+                    to_hrana_val(r["stars_count"]),
+                    to_hrana_val(r["forks_count"]),
+                    to_hrana_val(r["open_issues_count"]),
+                    to_hrana_val(r["primary_language"]),
+                    to_hrana_val(r["license"]),
+                    to_hrana_val(1 if r["is_archived"] else 0),
+                    to_hrana_val(r["created_at"]),
+                    to_hrana_val(r["pushed_at"]),
+                    to_hrana_val(r["macro_domain"]),
+                    to_hrana_val(r["sub_domain"]),
+                    to_hrana_val(r["archetype"]),
+                    to_hrana_val(r["problem_solved"]),
+                    to_hrana_val(r["use_cases"]),
+                    to_hrana_val(r["primary_ecosystem"]),
+                    to_hrana_val(r["target_audience"]),
+                    to_hrana_val(r["confidence_score"]),
+                    to_hrana_val(1 if r["is_enriched"] else 0),
+                ]
+                requests_payload.append({
+                    "type": "execute",
+                    "stmt": {
+                        "sql": sql,
+                        "args": params,
+                    }
+                })
+
+            resp = requests.post(pipeline_url, headers=headers, json={"requests": requests_payload}, timeout=30)
+            if resp.status_code != 200:
+                logger.error("Turso HTTP pipeline failed with code %d: %s", resp.status_code, resp.text)
+                raise RuntimeError(f"Turso pipeline failed: {resp.text}")
+            
+            upserted += len(batch)
+            logger.info("Batch upserted %d repositories to Turso (HTTP pipeline).", len(batch))
+
         logger.info("Successfully upserted %d repositories to Turso LibSQL.", upserted)
         return upserted
 
@@ -853,6 +911,12 @@ def parse_arguments() -> argparse.Namespace:
         default=100,
         help="Bulk database upsert batch size (default: 100)",
     )
+    parser.add_argument(
+        "--turso-auth-token",
+        type=str,
+        default=None,
+        help="Turso authentication JWT token (defaults to TURSO_AUTH_TOKEN env)",
+    )
     return parser.parse_args()
 
 
@@ -862,6 +926,7 @@ def main():
         token=args.token,
         db_provider=args.db_provider,
         database_url=args.database_url,
+        turso_auth_token=args.turso_auth_token,
         dry_run=args.dry_run,
         batch_size=args.batch_size,
     )
