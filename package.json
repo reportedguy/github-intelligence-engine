@@ -1,0 +1,9 @@
+{
+  "name": "github-intelligence-engine-root",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "build": "cd frontend && npm install && npm run build",
+    "pages:build": "cd frontend && npm install && npx @cloudflare/next-on-pages"
+  }
+}
