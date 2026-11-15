@@ -1,0 +1,16 @@
+# GitHub Intelligence Engine (2k+ Stars) — Python Dependencies
+# Core HTTP and Data Validation
+requests>=2.31.0
+pydantic>=2.0.0
+python-dotenv>=1.0.0
+
+# Vector Embeddings (Local 384-dim ONNX: bge-small-en-v1.5, zero API cost)
+fastembed>=0.2.0
+
+# Multi-Provider Free-Tier LLM Orchestration
+groq>=0.4.0
+google-generativeai>=0.4.0
+
+# Dual Database Storage Drivers (Supabase pgvector & Turso LibSQL)
+psycopg2-binary>=2.9.9
+libsql-client>=0.3.0
