@@ -6,3 +6,4 @@ compatibility_flags = ["nodejs_compat"]
 [assets]
 directory = "frontend/out"
 binding = "ASSETS"
+not_found_handling = "single-page-application"
