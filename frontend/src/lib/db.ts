@@ -148,9 +148,15 @@ async function searchTurso(filters: SearchFilters): Promise<Repository[]> {
   }
 
   if (filters.query.trim()) {
-    const term = `%${filters.query.trim()}%`;
-    conditions.push('(full_name LIKE ? OR description LIKE ? OR problem_solved LIKE ? OR use_cases LIKE ?)');
-    args.push(term, term, term, term);
+    // Multi-token partial matching: allows searching by partial words or full use-cases
+    const tokens = filters.query.trim().split(/\s+/).filter(Boolean);
+    for (const token of tokens) {
+      const term = `%${token}%`;
+      conditions.push(
+        '(full_name LIKE ? OR description LIKE ? OR problem_solved LIKE ? OR use_cases LIKE ? OR primary_language LIKE ? OR macro_domain LIKE ?)'
+      );
+      args.push(term, term, term, term, term, term);
+    }
   }
 
   const sql = `
