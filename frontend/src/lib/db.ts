@@ -5,9 +5,6 @@ import { MOCK_REPOSITORIES } from './mockData';
 import { generateQueryEmbedding } from './embedder';
 
 // Configurable DB Provider
-const DB_PROVIDER = (process.env.DB_PROVIDER || 'supabase').toLowerCase();
-
-// Supabase credentials
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL || '';
 const SUPABASE_KEY =
   process.env.SUPABASE_SERVICE_ROLE_KEY ||
@@ -16,17 +13,23 @@ const SUPABASE_KEY =
   '';
 
 // Turso credentials
-const TURSO_URL = process.env.TURSO_DATABASE_URL || '';
-const TURSO_AUTH_TOKEN = process.env.TURSO_AUTH_TOKEN || '';
+const TURSO_URL = process.env.NEXT_PUBLIC_TURSO_DATABASE_URL || process.env.TURSO_DATABASE_URL || '';
+const TURSO_AUTH_TOKEN = process.env.NEXT_PUBLIC_TURSO_AUTH_TOKEN || process.env.TURSO_AUTH_TOKEN || '';
 
 const hasSupabase = Boolean(SUPABASE_URL && SUPABASE_KEY);
 const hasTurso = Boolean(TURSO_URL && TURSO_AUTH_TOKEN);
+
+const DB_PROVIDER = (
+  process.env.NEXT_PUBLIC_DB_PROVIDER ||
+  process.env.DB_PROVIDER ||
+  (hasTurso ? 'turso' : 'supabase')
+).toLowerCase();
 
 export async function executeSearch(filters: SearchFilters): Promise<SearchResponse> {
   const startTime = Date.now();
 
   try {
-    if (DB_PROVIDER === 'turso' && hasTurso) {
+    if (hasTurso && (DB_PROVIDER === 'turso' || !hasSupabase)) {
       const results = await searchTurso(filters);
       return {
         results,
